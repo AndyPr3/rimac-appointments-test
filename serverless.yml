@@ -1,0 +1,178 @@
+service: rimac-appointments
+frameworkVersion: "3"
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-iam-roles-per-function
+  - serverless-offline
+  - serverless-aws-documentation
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  timeout: 29
+  environment:
+    DYNAMO_TABLE: ${self:service}-${sls:stage}-appointments
+    SNS_TOPIC: ${self:service}-${sls:stage}-appointments-topic
+    SQS_PE: ${self:service}-${sls:stage}-sqs-pe
+    SQS_CL: ${self:service}-${sls:stage}-sqs-cl
+    SQS_CONFIRMATIONS: ${self:service}-${sls:stage}-sqs-confirmations
+    EVENT_BUS: ${self:service}-${sls:stage}-bus
+    # RDS desde SSM
+    RDS_HOST: ${ssm:/rimac/${sls:stage}/rds/host}
+    RDS_PORT: ${ssm:/rimac/${sls:stage}/rds/port}
+    RDS_USER: ${ssm:/rimac/${sls:stage}/rds/user}
+    RDS_PASS: ${ssm:/rimac/${sls:stage}/rds/pass}
+    RDS_DB:   ${ssm:/rimac/${sls:stage}/rds/db}
+    # Inyecta el ARN real del Topic (lo definimos abajo en resources)
+    SNS_TOPIC_ARN: !Ref SnsTopic
+
+functions:
+  appointment:
+    handler: src/interfaces/http/handlers/appointmentHandler.main
+    events:
+      - http:
+          method: POST
+          path: /appointments
+          documentation:
+            summary: Crear agendamiento
+            description: Registra solicitud (pending) y publica en SNS con filtro por countryISO
+      - http:
+          method: GET
+          path: /appointments/{insuredId}
+          documentation:
+            summary: Listar agendamientos por insuredId
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+          - dynamodb:Query
+          - dynamodb:UpdateItem
+        Resource:
+          - !GetAtt DynamoTable.Arn
+      - Effect: Allow
+        Action: sns:Publish
+        Resource: !Ref SnsTopic
+
+  appointment_pe:
+    handler: src/interfaces/sqs/handlers/appointmentPeHandler.main
+    events:
+      - sqs:
+          arn: !GetAtt SqsPe.Arn
+    iamRoleStatements:
+      - Effect: Allow
+        Action: events:PutEvents
+        Resource: !GetAtt EventBus.Arn
+
+  appointment_cl:
+    handler: src/interfaces/sqs/handlers/appointmentClHandler.main
+    events:
+      - sqs:
+          arn: !GetAtt SqsCl.Arn
+    iamRoleStatements:
+      - Effect: Allow
+        Action: events:PutEvents
+        Resource: !GetAtt EventBus.Arn
+
+  appointment_status_updater:
+    handler: src/interfaces/sqs/handlers/appointmentStatusUpdater.main
+    events:
+      - sqs:
+          arn: !GetAtt SqsConfirmations.Arn
+    iamRoleStatements:
+      - Effect: Allow
+        Action: dynamodb:UpdateItem
+        Resource: !GetAtt DynamoTable.Arn
+
+resources:
+  Resources:
+    DynamoTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.DYNAMO_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: insuredId
+            AttributeType: S
+          - AttributeName: requestId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: insuredId
+            KeyType: HASH
+          - AttributeName: requestId
+            KeyType: RANGE
+
+    SnsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:provider.environment.SNS_TOPIC}
+
+    SqsPe:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:provider.environment.SQS_PE}
+    SqsCl:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:provider.environment.SQS_CL}
+
+    SnsSubPe:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SnsTopic
+        Protocol: sqs
+        Endpoint: !GetAtt SqsPe.Arn
+        FilterPolicy:
+          countryISO: [ "PE" ]
+
+    SnsSubCl:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: !Ref SnsTopic
+        Protocol: sqs
+        Endpoint: !GetAtt SqsCl.Arn
+        FilterPolicy:
+          countryISO: [ "CL" ]
+
+    EventBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:provider.environment.EVENT_BUS}
+
+    SqsConfirmations:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:provider.environment.SQS_CONFIRMATIONS}
+
+    EventRuleToConfirmations:
+      Type: AWS::Events::Rule
+      Properties:
+        EventBusName: !Ref EventBus
+        EventPattern:
+          source: [ "appointments.worker" ]
+          detail-type: [ "AppointmentScheduled" ]
+        Targets:
+          - Arn: !GetAtt SqsConfirmations.Arn
+            Id: ToConfirmations
+
+    EventPermissionSqs:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues: [ !Ref SqsConfirmations ]
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: "events.amazonaws.com" }
+              Action: "sqs:SendMessage"
+              Resource: !GetAtt SqsConfirmations.Arn
+
+custom:
+  documentation:
+    api:
+      info:
+        version: "1.0.0"
+        title: "Rimac Appointments API"
+        description: "API de agendamiento con SNS+SQS+EventBridge"
