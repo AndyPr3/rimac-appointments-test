@@ -2,7 +2,7 @@
   "name": "rimac-appointments",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
     "start": "serverless offline",
     "deploy:dev": "serverless deploy --stage dev",
@@ -28,7 +28,6 @@
     "@aws-sdk/client-eventbridge": "^3.640.0",
     "@aws-sdk/client-sns": "^3.640.0",
     "@aws-sdk/util-dynamodb": "^3.640.0",
-    "mysql2": "^3.11.3",
-    "uuid": "^9.0.1"
+    "mysql2": "^3.11.3"
   }
 }

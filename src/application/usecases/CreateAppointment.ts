@@ -1,4 +1,4 @@
-import { v4 as uuid } from 'uuid';
+import { randomUUID } from 'crypto';
 import { AppointmentRepository } from '../../domain/ports/AppointmentRepository';
 import { CreateAppointmentDTO } from '../../domain/entities/Appointment';
 import { SnsMessageBus } from '../../infrastructure/messaging/SnsMessageBus';
@@ -10,7 +10,7 @@ export class CreateAppointment {
   ) {}
 
   async exec(input: CreateAppointmentDTO) {
-    const requestId = uuid();
+    const requestId = randomUUID();
     const now = new Date().toISOString();
 
     await this.repo.createPending({
